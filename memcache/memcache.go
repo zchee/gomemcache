@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 
 	"strconv"
@@ -61,6 +62,12 @@ var (
 
 	// ErrNoServers is returned when no servers are configured or available.
 	ErrNoServers = errors.New("memcache: no servers configured or available")
+
+	// ErrInvalidPollingDuration is returned when discovery polling is invalid
+	ErrInvalidPollingDuration = errors.New("Discovery polling duration is invalid")
+
+	// ErrClusterConfigMiss means that GetConfig failed as cluster config was not present
+	ErrClusterConfigMiss = errors.New("memcache: cluster config miss")
 )
 
 const (
@@ -115,6 +122,32 @@ var (
 	versionPrefix           = []byte("VERSION")
 )
 
+// NewDiscoveryClient returns a discovery config enabled client which polls
+// periodically for new information and update server list if new information is found.
+// All the servers which are found are used with equal weight.
+// discoveryAddress should be in following form "ipv4-address:port"
+// Note: pollingDuration should be at least 1 second.
+func NewDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
+	// Validate pollingDuration
+	if pollingDuration.Seconds() < 1.0 {
+		return nil, ErrInvalidPollingDuration
+	}
+	return newDiscoveryClient(discoveryAddress, pollingDuration)
+}
+
+// for the unit test
+func newDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
+	// creates a new ServerList object which contains all the server eventually.
+	rand.Seed(time.Now().UnixNano())
+	ss := new(ServerList)
+	mcCfgPollerHelper := New(discoveryAddress)
+	cfgPoller := newConfigPoller(pollingDuration, ss, mcCfgPollerHelper)
+	// cfgPoller starts polling immediately.
+	mcClient := NewFromSelector(ss)
+	mcClient.StopPolling = cfgPoller.stopPolling
+	return mcClient, nil
+}
+
 // New returns a memcache client using the provided server(s)
 // with equal weight. If a server is listed multiple times,
 // it gets a proportional amount of weight.
@@ -128,6 +161,8 @@ func New(server ...string) *Client {
 func NewFromSelector(ss ServerSelector) *Client {
 	return &Client{selector: ss}
 }
+
+type stop func()
 
 // Client is a memcache client.
 // It is safe for unlocked use by multiple concurrent goroutines.
@@ -144,7 +179,8 @@ type Client struct {
 	// be set to a number higher than your peak parallel requests.
 	MaxIdleConns int
 
-	selector ServerSelector
+	selector    ServerSelector
+	StopPolling stop
 
 	lk       sync.Mutex
 	freeconn map[string][]*conn
@@ -710,4 +746,52 @@ func (c *Client) incrDecr(verb, key string, delta uint64) (uint64, error) {
 		return nil
 	})
 	return val, err
+}
+
+// GetConfig gets the config type. ErrClusterConfigMiss is returned if config
+// for the type cluster is not found. The type must be at most 250 bytes in length.
+func (c *Client) GetConfig(configType string) (clusterConfig *ClusterConfig, err error) {
+	clusterConfig, err = c.getConfig(configType)
+	if err != nil {
+		return nil, err
+	}
+
+	if clusterConfig == nil {
+		return nil, ErrClusterConfigMiss
+	}
+
+	return clusterConfig, nil
+}
+
+// TODO-GO Implement setConfig as well.
+// getConfig gets the config type. ErrClusterConfigMiss is returned if config
+// for the type cluster is not found. The type must be at most 250 bytes in length.
+func (c *Client) getConfig(configType string) (clusterConfig *ClusterConfig, err error) {
+	s1Adrr, err := c.selector.PickAnyServer()
+	if err != nil {
+		return nil, err
+	}
+	err = c.getConfigFromAddr(s1Adrr, configType, func(cc *ClusterConfig) { clusterConfig = cc })
+	if err != nil {
+		return nil, err
+	}
+	if clusterConfig == nil {
+		err = ErrClusterConfigMiss
+	}
+	return
+}
+
+func (c *Client) getConfigFromAddr(addr net.Addr, configType string, cb func(*ClusterConfig)) error {
+	return c.withAddrRw(addr, func(rw *bufio.ReadWriter) error {
+		if _, err := fmt.Fprintf(rw, "config get %s\r\n", configType); err != nil {
+			return err
+		}
+		if err := rw.Flush(); err != nil {
+			return err
+		}
+		if err := parseConfigGetResponse(rw.Reader, cb); err != nil {
+			return err
+		}
+		return nil
+	})
 }

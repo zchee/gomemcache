@@ -18,10 +18,14 @@ package memcache
 
 import (
 	"hash/crc32"
+	"math/rand"
 	"net"
 	"strings"
 	"sync"
 )
+
+// Note: If you are implementing ServerSelector, you will have to implement the
+// new method PickAnyServer
 
 // ServerSelector is the interface that selects a memcache server
 // as a function of the item's key.
@@ -32,6 +36,11 @@ type ServerSelector interface {
 	// PickServer returns the server address that a given item
 	// should be shared onto.
 	PickServer(key string) (net.Addr, error)
+
+	// PickAnyServer returns any active server, preferably not the
+	// same one every time in order to distribute the load.
+	// This can be used to get information which is server agnostic.
+	PickAnyServer() (net.Addr, error)
 	Each(func(net.Addr) error) error
 }
 
@@ -109,6 +118,22 @@ var keyBufPool = sync.Pool{
 		b := make([]byte, 256)
 		return &b
 	},
+}
+
+// PickAnyServer picks any active server
+// This can be used to get information which is not linked to a key or which could be on any server.
+func (ss *ServerList) PickAnyServer() (net.Addr, error) {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	if len(ss.addrs) == 0 {
+		return nil, ErrNoServers
+	}
+
+	if len(ss.addrs) == 1 {
+		return ss.addrs[0], nil
+	}
+	return ss.addrs[rand.Intn(len(ss.addrs))], nil
+
 }
 
 func (ss *ServerList) PickServer(key string) (net.Addr, error) {
