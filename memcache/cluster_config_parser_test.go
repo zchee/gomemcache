@@ -57,9 +57,9 @@ func TestGoodClusterConfigs(t *testing.T) {
 		discoveryID        int
 		discoveryAddresses [][]string
 	}{
-		{2, [][]string{[]string{"localhost", "112233"}}},
-		{1000, [][]string{[]string{"localhost", "112233"}, []string{"127.0.0.4", "123435"}}},
-		{50, [][]string{[]string{"localhost", "112233"}, []string{"127.0.0.4", "123435"}, []string{"127.0", "123"}}},
+		{2, [][]string{{"localhost", "112233"}}},
+		{1000, [][]string{{"localhost", "112233"}, {"127.0.0.4", "123435"}}},
+		{50, [][]string{{"localhost", "112233"}, {"127.0.0.4", "123435"}, {"127.0", "123"}}},
 	}
 	for _, tt := range configTests {
 		config := prepareConfigResponse(tt.discoveryID, tt.discoveryAddresses)
