@@ -6,13 +6,11 @@ package memcache
 import (
 	"context"
 	"errors"
+	"net"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
-
-	"net"
-	"os/exec"
-
 	"testing"
 	"time"
 )
@@ -202,7 +200,7 @@ func findOpenLocalHostPort(portLow, portHigh, openPortsToFind int) []int {
 	timeout := 10 * time.Millisecond
 	openPorts := make([]int, 0, 2)
 	for i := portLow; i < portHigh; i++ {
-		addressToTry := net.JoinHostPort("localhost", strconv.Itoa(i))
+		addressToTry := net.JoinHostPort("127.0.0.1", strconv.Itoa(i))
 		conn, err := net.DialTimeout("tcp", addressToTry, timeout)
 		// if connection is refused, it could be a free port
 		if err != nil && strings.Contains(err.Error(), "connection refused") {

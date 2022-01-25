@@ -4,7 +4,6 @@
 package memcache
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -16,10 +15,10 @@ import (
 	"time"
 )
 
-const testServer = "localhost:11211"
+const testServer = "127.0.0.1:11211"
 
 func setup(t *testing.T) bool {
-	c, err := net.Dial("tcp", testServer)
+	c, err := net.Dial("tcp4", testServer)
 	if err != nil {
 		t.Skipf("skipping test; no server running at %s", testServer)
 	}
@@ -252,7 +251,7 @@ func testTouchWithClient(t *testing.T, c *Client) {
 }
 
 func BenchmarkOnItem(b *testing.B) {
-	fakeServer, err := net.Listen("tcp", "localhost:0")
+	fakeServer, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		b.Fatal("Could not open fake server: ", err)
 	}
@@ -274,9 +273,8 @@ func BenchmarkOnItem(b *testing.B) {
 	}
 
 	item := Item{Key: "foo"}
-	dummyFn := func(_ *Client, _ *bufio.ReadWriter, _ *Item) error { return nil }
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.onItem(&item, dummyFn)
+		c.populateOne(cmdNoop, &item, false)
 	}
 }

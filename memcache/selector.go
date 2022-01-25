@@ -11,7 +11,29 @@ import (
 	"sync"
 )
 
-// Note: If you are implementing ServerSelector, you will have to implement the
+// staticAddr caches the Network() and String() values from any net.Addr.
+type staticAddr struct {
+	ntw string
+	str string
+}
+
+// make sure staticAddr implements the net.Addr interface.
+var _ net.Addr = (*staticAddr)(nil)
+
+func newStaticAddr(a net.Addr) net.Addr {
+	return &staticAddr{
+		ntw: a.Network(),
+		str: a.String(),
+	}
+}
+
+// Network name of the network.
+func (s *staticAddr) Network() string { return s.ntw }
+
+// String string form of address.
+func (s *staticAddr) String() string { return s.str }
+
+// NOTE: If you are implementing ServerSelector, you will have to implement the
 // new method PickAnyServer
 
 // ServerSelector is the interface that selects a memcache server
@@ -22,35 +44,28 @@ import (
 type ServerSelector interface {
 	// PickServer returns the server address that a given item
 	// should be shared onto.
-	PickServer(key string) (net.Addr, error)
+	PickServer(key string) (*Addr, error)
 
 	// PickAnyServer returns any active server, preferably not the
 	// same one every time in order to distribute the load.
 	// This can be used to get information which is server agnostic.
-	PickAnyServer() (net.Addr, error)
-	Each(func(net.Addr) error) error
+	PickAnyServer() (*Addr, error)
+
+	// Each iterates over each server calling the given function.
+	Each(f func(*Addr) error) error
+
+	// Addrs returns the current server addresses.
+	Addrs() []*Addr
 }
 
 // ServerList is a simple ServerSelector. Its zero value is usable.
 type ServerList struct {
 	mu    sync.RWMutex
-	addrs []net.Addr
+	addrs []*Addr
 }
 
-// staticAddr caches the Network() and String() values from any net.Addr.
-type staticAddr struct {
-	ntw, str string
-}
-
-func newStaticAddr(a net.Addr) net.Addr {
-	return &staticAddr{
-		ntw: a.Network(),
-		str: a.String(),
-	}
-}
-
-func (s *staticAddr) Network() string { return s.ntw }
-func (s *staticAddr) String() string  { return s.str }
+// make sure ServerList implements the ServerSelector interface.
+var _ ServerSelector = (*ServerList)(nil)
 
 // SetServers changes a ServerList's set of servers at runtime and is
 // safe for concurrent use by multiple goroutines.
@@ -62,38 +77,34 @@ func (s *staticAddr) String() string  { return s.str }
 // resolve. No attempt is made to connect to the server. If any error
 // is returned, no changes are made to the ServerList.
 func (ss *ServerList) SetServers(servers ...string) error {
-	naddr := make([]net.Addr, len(servers))
+	addrs := make([]*Addr, len(servers))
 	for i, server := range servers {
-		if strings.Contains(server, "/") {
-			addr, err := net.ResolveUnixAddr("unix", server)
-			if err != nil {
-				return err
+		var network string
+		var fn func(network, address string) (net.Addr, error)
+		switch {
+		case strings.Contains(server, "/"):
+			network = "unix"
+			fn = func(network, address string) (net.Addr, error) {
+				return net.ResolveUnixAddr(network, address)
 			}
-			naddr[i] = newStaticAddr(addr)
-		} else {
-			tcpaddr, err := net.ResolveTCPAddr("tcp", server)
-			if err != nil {
-				return err
+		default:
+			network = "tcp"
+			fn = func(network, address string) (net.Addr, error) {
+				return net.ResolveTCPAddr(network, address)
 			}
-			naddr[i] = newStaticAddr(tcpaddr)
 		}
+
+		addr, err := fn(network, server)
+		if err != nil {
+			return err
+		}
+		addrs[i] = NewAddr(addr)
 	}
 
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.addrs = naddr
-	return nil
-}
+	ss.addrs = addrs
 
-// Each iterates over each server calling the given function
-func (ss *ServerList) Each(f func(net.Addr) error) error {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-	for _, a := range ss.addrs {
-		if err := f(a); nil != err {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -107,11 +118,15 @@ var keyBufPool = sync.Pool{
 	},
 }
 
-// PickAnyServer picks any active server
-// This can be used to get information which is not linked to a key or which could be on any server.
-func (ss *ServerList) PickAnyServer() (net.Addr, error) {
+// PickAnyServer returns any active server, preferably not the
+// same one every time in order to distribute the load.
+// This can be used to get information which is server agnostic.
+//
+// PickServer implements ServerSelector.PickServer.
+func (ss *ServerList) PickServer(key string) (*Addr, error) {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
+
 	if len(ss.addrs) == 0 {
 		return nil, ErrNoServers
 	}
@@ -119,23 +134,56 @@ func (ss *ServerList) PickAnyServer() (net.Addr, error) {
 	if len(ss.addrs) == 1 {
 		return ss.addrs[0], nil
 	}
-	return ss.addrs[rand.Intn(len(ss.addrs))], nil
 
-}
-
-func (ss *ServerList) PickServer(key string) (net.Addr, error) {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-	if len(ss.addrs) == 0 {
-		return nil, ErrNoServers
-	}
-	if len(ss.addrs) == 1 {
-		return ss.addrs[0], nil
-	}
 	bufp := keyBufPool.Get().(*[]byte)
 	n := copy(*bufp, key)
 	cs := crc32.ChecksumIEEE((*bufp)[:n])
 	keyBufPool.Put(bufp)
 
 	return ss.addrs[cs%uint32(len(ss.addrs))], nil
+}
+
+// PickAnyServer picks any active server
+// This can be used to get information which is not linked to a key or which could be on any server.
+//
+// PickAnyServer implements ServerSelector.PickAnyServer.
+func (ss *ServerList) PickAnyServer() (*Addr, error) {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+
+	if len(ss.addrs) == 0 {
+		return nil, ErrNoServers
+	}
+
+	if len(ss.addrs) == 1 {
+		return ss.addrs[0], nil
+	}
+
+	return ss.addrs[rand.Intn(len(ss.addrs))], nil
+
+}
+
+// Each iterates over each server calling the given function.
+//
+// Each implements ServerSelector.Each.
+func (ss *ServerList) Each(f func(*Addr) error) error {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	for _, a := range ss.addrs {
+		if err := f(a); nil != err {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Addrs returns the current server addresses.
+//
+// Addrs implements ServerSelector.Addrs.
+func (ss *ServerList) Addrs() []*Addr {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+
+	return ss.addrs
 }
