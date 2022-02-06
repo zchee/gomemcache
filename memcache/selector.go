@@ -33,9 +33,6 @@ func (s *staticAddr) Network() string { return s.ntw }
 // String string form of address.
 func (s *staticAddr) String() string { return s.str }
 
-// NOTE: If you are implementing ServerSelector, you will have to implement the
-// new method PickAnyServer
-
 // ServerSelector is the interface that selects a memcache server
 // as a function of the item's key.
 //
@@ -55,7 +52,7 @@ type ServerSelector interface {
 	Each(f func(*Addr) error) error
 
 	// Addrs returns the current server addresses.
-	Addrs() []*Addr
+	Servers() []*Addr
 }
 
 // ServerList is a simple ServerSelector. Its zero value is usable.
@@ -178,10 +175,10 @@ func (ss *ServerList) Each(f func(*Addr) error) error {
 	return nil
 }
 
-// Addrs returns the current server addresses.
+// Servers returns the current server addresses.
 //
-// Addrs implements ServerSelector.Addrs.
-func (ss *ServerList) Addrs() []*Addr {
+// Servers implements ServerSelector.Servers.
+func (ss *ServerList) Servers() []*Addr {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 

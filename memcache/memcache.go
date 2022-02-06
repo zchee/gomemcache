@@ -532,7 +532,7 @@ func (c *Client) getConn(addr *Addr) (*conn, error) {
 
 func (c *Client) each(cmd command, cas bool) error {
 	var chs []chan error
-	for _, addr := range c.selector.Addrs() {
+	for _, addr := range c.selector.Servers() {
 		ch := make(chan error)
 		chs = append(chs, ch)
 
