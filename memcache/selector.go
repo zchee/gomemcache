@@ -157,7 +157,6 @@ func (ss *ServerList) PickAnyServer() (*Addr, error) {
 	}
 
 	return ss.addrs[rand.Intn(len(ss.addrs))], nil
-
 }
 
 // Each iterates over each server calling the given function.
