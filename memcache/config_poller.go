@@ -1,3 +1,4 @@
+// Copyright 2011 Google Inc.
 // Copyright 2022 The gomemcache Authors
 // SPDX-License-Identifier: Apache-2.0
 
