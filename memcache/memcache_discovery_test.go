@@ -37,6 +37,7 @@ func TestDiscoveryUnixSocket(t *testing.T) {
 
 	ctx := context.Background()
 	defer ctx.Done()
+
 	fakeDiscoveryServer.start(ctx)
 	t.Cleanup(teardown)
 	openPorts := findOpenLocalHostPort(portLow, portHigh, 2)
@@ -60,11 +61,11 @@ func TestDiscoveryUnixSocket(t *testing.T) {
 	}
 
 	fakeDiscoveryServer.updateDiscoveryInformation(1, openPorts)
-	discoveryClient, err := newDiscoveryClient(fakeDiscoveryServer.currentAddress, testPollingTime)
+	discoveryClient, err := newDiscoveryClient(ctx, fakeDiscoveryServer.currentAddress, testPollingTime)
 	if err != nil {
 		t.Fatalf("could not create discovery client due to %v", err)
 	}
-	testWithDiscoveryClient(t, &fakeDiscoveryServer, discoveryClient)
+	testWithDiscoveryClient(ctx, t, &fakeDiscoveryServer, discoveryClient)
 	discoveryClient.StopPolling()
 }
 
@@ -168,7 +169,7 @@ func testInvalidConfigChange(t *testing.T, fakeMemcacheServer *fakeDiscoveryMemc
 	testSingleInvalidConfigCase(t, fakeMemcacheServer, c, result.String(), originalPortList)
 }
 
-func testWithDiscoveryClient(t *testing.T, fakeMemcacheServer *fakeDiscoveryMemcacheServer, c *Client) {
+func testWithDiscoveryClient(ctx context.Context, t *testing.T, fakeMemcacheServer *fakeDiscoveryMemcacheServer, c *Client) {
 	// Run discovery config tests
 	if fakeMemcacheServer != nil {
 		testValidConfigChange(t, fakeMemcacheServer, c)
@@ -176,7 +177,7 @@ func testWithDiscoveryClient(t *testing.T, fakeMemcacheServer *fakeDiscoveryMemc
 	}
 
 	// reuse the other test library
-	testWithClient(t, c)
+	testWithClient(ctx, t, c)
 }
 
 func startMemcachedServer(t *testing.T, port int, ready chan<- bool, exit <-chan bool) error {

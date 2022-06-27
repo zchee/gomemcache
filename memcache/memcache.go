@@ -6,6 +6,7 @@ package memcache
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -271,22 +272,22 @@ func NewFromSelector(ss ServerSelector) *Client {
 // All the servers which are found are used with equal weight.
 // discoveryAddress should be in following form "ipv4-address:port"
 // Note: pollingDuration should be at least 1 second.
-func NewDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
+func NewDiscoveryClient(ctx context.Context, discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
 	// validate pollingDuration
 	if pollingDuration.Seconds() < 1.0 {
 		return nil, ErrInvalidPollingDuration
 	}
 
-	return newDiscoveryClient(discoveryAddress, pollingDuration)
+	return newDiscoveryClient(ctx, discoveryAddress, pollingDuration)
 }
 
-func newDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
+func newDiscoveryClient(ctx context.Context, discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
 	ss := &ServerList{
 		// creates a new ServerList object which contains all the server eventually.
 		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 	mcCfgPollerHelper := New(discoveryAddress)
-	cfgPoller := newConfigPoller(pollingDuration, ss, mcCfgPollerHelper)
+	cfgPoller := newConfigPoller(ctx, pollingDuration, ss, mcCfgPollerHelper)
 
 	// cfgPoller starts polling immediately.
 	c := NewFromSelector(ss)
@@ -378,9 +379,11 @@ func (c *Client) SetMaxIdleConnsPerAddr(maxIdle int) {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	c.closeIdleConns()
 	c.freeconn = nil
 	c.maxIdlePerAddr = 0
+
 	return nil
 }
 
@@ -506,7 +509,7 @@ func (cte *ConnectTimeoutErr) Error() string {
 	return "memcache: connect timeout to " + cte.Addr.String()
 }
 
-func (c *Client) dial(addr *Addr) (net.Conn, error) {
+func (c *Client) dial(ctx context.Context, addr *Addr) (net.Conn, error) {
 	if c.timeout > 0 {
 		conn, err := net.DialTimeout(addr.n, addr.s, c.timeout)
 		if err != nil {
@@ -523,10 +526,10 @@ func (c *Client) dial(addr *Addr) (net.Conn, error) {
 	return net.Dial(addr.n, addr.s)
 }
 
-func (c *Client) getConn(addr *Addr) (*conn, error) {
+func (c *Client) getConn(ctx context.Context, addr *Addr) (*conn, error) {
 	cn := c.getFreeConn(addr)
 	if cn == nil {
-		nc, err := c.dial(addr)
+		nc, err := c.dial(ctx, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -543,7 +546,7 @@ func (c *Client) getConn(addr *Addr) (*conn, error) {
 	return cn, nil
 }
 
-func (c *Client) each(cmd command, cas bool) error {
+func (c *Client) each(ctx context.Context, cmd command, cas bool) error {
 	var chs []chan error
 	for _, addr := range c.selector.Servers() {
 		ch := make(chan error)
@@ -552,20 +555,20 @@ func (c *Client) each(cmd command, cas bool) error {
 		go func(addr *Addr, ch chan error) {
 			defer close(ch)
 
-			cn, err := c.getConn(addr)
+			cn, err := c.getConn(ctx, addr)
 			if err != nil {
 				ch <- err
 				return
 			}
 			defer c.condRelease(cn, &err)
 
-			err = c.sendConnCommand(cn, "", cmd, nil, 0, nil)
+			err = c.sendConnCommand(ctx, cn, "", cmd, nil, 0, nil)
 			if err != nil {
 				ch <- err
 				return
 			}
 
-			err = c.parseErrorResponse(cn)
+			err = c.parseErrorResponse(ctx, cn)
 			if err != nil {
 				ch <- err
 				return
@@ -584,7 +587,7 @@ func (c *Client) each(cmd command, cas bool) error {
 	return nil
 }
 
-func (c *Client) eachItem(keys []string, cmd command, item *Item, extras []byte) (map[string]*Item, error) {
+func (c *Client) eachItem(ctx context.Context, keys []string, cmd command, item *Item, extras []byte) (map[string]*Item, error) {
 	km := make(map[*Addr][]string)
 	for _, key := range keys {
 		if !isValidKey(key) {
@@ -606,25 +609,25 @@ func (c *Client) eachItem(keys []string, cmd command, item *Item, extras []byte)
 		go func(addr *Addr, keys []string, ch chan *Item) {
 			defer close(ch)
 
-			cn, err := c.getConn(addr)
+			cn, err := c.getConn(ctx, addr)
 			if err != nil {
 				return
 			}
 			defer c.condRelease(cn, &err)
 
 			for _, k := range keys {
-				if err := c.sendConnCommand(cn, k, cmd, nil, 0, nil); err != nil {
+				if err := c.sendConnCommand(ctx, cn, k, cmd, nil, 0, nil); err != nil {
 					return
 				}
 			}
-			if err := c.sendConnCommand(cn, "", cmdNoop, nil, 0, nil); err != nil {
+			if err := c.sendConnCommand(ctx, cn, "", cmdNoop, nil, 0, nil); err != nil {
 				return
 			}
 
 			var item *Item
 			var loopErr error
 			for {
-				item, loopErr = c.parseItemResponse("", cn, false)
+				item, loopErr = c.parseItemResponse(ctx, "", cn, false)
 				if loopErr != nil {
 					return
 				}
@@ -648,19 +651,19 @@ func (c *Client) eachItem(keys []string, cmd command, item *Item, extras []byte)
 	return m, nil
 }
 
-func (c *Client) FlushAll(key string) error {
-	return c.each(cmdFlush, false)
+func (c *Client) FlushAll(ctx context.Context, key string) error {
+	return c.each(ctx, cmdFlush, false)
 }
 
 // Get gets the item for the given key. ErrCacheMiss is returned for a
 // memcache cache miss. The key must be at most 250 bytes in length.
-func (c *Client) Get(key string) (*Item, error) {
-	cn, err := c.sendCommand(key, cmdGet, nil, 0, nil)
+func (c *Client) Get(ctx context.Context, key string) (*Item, error) {
+	cn, err := c.sendCommand(ctx, key, cmdGet, nil, 0, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.parseItemResponse(key, cn, true)
+	return c.parseItemResponse(ctx, key, cn, true)
 }
 
 // Touch updates the expiry for the given key. The seconds parameter is either
@@ -669,23 +672,23 @@ func (c *Client) Get(key string) (*Item, error) {
 //
 // Zero means the item has no expiration time. ErrCacheMiss is returned if the key is not in the cache.
 // The key must be at most 250 bytes in length.
-func (c *Client) Touch(key string, seconds int32) error {
+func (c *Client) Touch(ctx context.Context, key string, seconds int32) error {
 	value := make([]byte, 8)
 	binary.BigEndian.PutUint32(value, uint32(seconds))
 	binary.BigEndian.PutUint32(value[4:8], uint32(0))
 
-	cn, err := c.sendCommand(key, cmdTouch, value, 0, nil)
+	cn, err := c.sendCommand(ctx, key, cmdTouch, value, 0, nil)
 	if err != nil {
 		return err
 	}
-	if _, err := c.parseUintResponse(key, cn); err != nil {
+	if _, err := c.parseUintResponse(ctx, key, cn); err != nil {
 		return nil
 	}
 
 	return nil
 }
 
-func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
+func (c *Client) sendCommand(ctx context.Context, key string, cmd command, value []byte, casid uint64, extras []byte) (*conn, error) {
 	if !isValidKey(key) {
 		return nil, ErrMalformedKey
 	}
@@ -695,12 +698,12 @@ func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64
 		return nil, err
 	}
 
-	cn, err := c.getConn(addr)
+	cn, err := c.getConn(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.sendConnCommand(cn, key, cmd, value, casid, extras); err != nil {
+	if err := c.sendConnCommand(ctx, cn, key, cmd, value, casid, extras); err != nil {
 		cn.nc.Close()
 		return nil, err
 	}
@@ -708,7 +711,7 @@ func (c *Client) sendCommand(key string, cmd command, value []byte, casid uint64
 	return cn, nil
 }
 
-func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (err error) {
+func (c *Client) sendConnCommand(ctx context.Context, cn *conn, key string, cmd command, value []byte, casid uint64, extras []byte) (err error) {
 	var buf []byte
 	select {
 	// 24 is header size
@@ -770,7 +773,7 @@ func (c *Client) sendConnCommand(cn *conn, key string, cmd command, value []byte
 	return nil
 }
 
-func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, []byte, error) {
+func (c *Client) parseResponse(ctx context.Context, rKey string, cn *conn) ([]byte, []byte, []byte, []byte, error) {
 	var err error
 	hdr := make([]byte, 24)
 	if err = readAtLeast(cn.nc, hdr, 24); err != nil {
@@ -823,8 +826,8 @@ func (c *Client) parseResponse(rKey string, cn *conn) ([]byte, []byte, []byte, [
 	return hdr, key, extras, value, nil
 }
 
-func (c *Client) parseUintResponse(key string, cn *conn) (uint64, error) {
-	_, _, _, value, err := c.parseResponse(key, cn)
+func (c *Client) parseUintResponse(ctx context.Context, key string, cn *conn) (uint64, error) {
+	_, _, _, value, err := c.parseResponse(ctx, key, cn)
 	c.condRelease(cn, &err)
 	if err != nil {
 		return 0, err
@@ -833,8 +836,8 @@ func (c *Client) parseUintResponse(key string, cn *conn) (uint64, error) {
 	return binary.BigEndian.Uint64(value), nil
 }
 
-func (c *Client) parseItemResponse(key string, cn *conn, release bool) (*Item, error) {
-	hdr, k, extras, value, err := c.parseResponse(key, cn)
+func (c *Client) parseItemResponse(ctx context.Context, key string, cn *conn, release bool) (*Item, error) {
+	hdr, k, extras, value, err := c.parseResponse(ctx, key, cn)
 	if release {
 		c.condRelease(cn, &err)
 	}
@@ -860,8 +863,8 @@ func (c *Client) parseItemResponse(key string, cn *conn, release bool) (*Item, e
 	}, nil
 }
 
-func (c *Client) parseErrorResponse(cn *conn) error {
-	_, _, _, _, err := c.parseResponse("", cn)
+func (c *Client) parseErrorResponse(ctx context.Context, cn *conn) error {
+	_, _, _, _, err := c.parseResponse(ctx, "", cn)
 	c.condRelease(cn, &err)
 	if err != nil {
 		return err
@@ -876,26 +879,26 @@ func (c *Client) parseErrorResponse(cn *conn) error {
 // cache misses.
 //
 // Each key must be at most 250 bytes in length. If no error is returned, the returned map will also be non-nil.
-func (c *Client) GetMulti(keys []string) (map[string]*Item, error) {
-	return c.eachItem(keys, cmdGetKQ, nil, nil)
+func (c *Client) GetMulti(ctx context.Context, keys []string) (map[string]*Item, error) {
+	return c.eachItem(ctx, keys, cmdGetKQ, nil, nil)
 }
 
 // Set writes the given item, unconditionally.
-func (c *Client) Set(item *Item) error {
-	return c.populateOne(cmdSet, item, 0)
+func (c *Client) Set(ctx context.Context, item *Item) error {
+	return c.populateOne(ctx, cmdSet, item, 0)
 }
 
 // Add writes the given item, if no value already exists for its key.
 //
 // ErrNotStored is returned if that condition is not met.
-func (c *Client) Add(item *Item) error {
-	return c.populateOne(cmdAdd, item, 0)
+func (c *Client) Add(ctx context.Context, item *Item) error {
+	return c.populateOne(ctx, cmdAdd, item, 0)
 }
 
 // Replace writes the given item, but only if the server *does*
 // already hold data for this key
-func (c *Client) Replace(item *Item) error {
-	if err := c.populateOne(cmdReplace, item, 0); err != nil {
+func (c *Client) Replace(ctx context.Context, item *Item) error {
+	if err := c.populateOne(ctx, cmdReplace, item, 0); err != nil {
 		if errors.Is(err, ErrCacheMiss) {
 			return ErrNotStored
 		}
@@ -914,21 +917,21 @@ func (c *Client) Replace(item *Item) error {
 // ErrCASConflict is returned if the value was modified in between the
 // calls. ErrNotStored is returned if the value was evicted in between
 // the calls.
-func (c *Client) CompareAndSwap(item *Item) error {
-	return c.populateOne(cmdSet, item, item.casID)
+func (c *Client) CompareAndSwap(ctx context.Context, item *Item) error {
+	return c.populateOne(ctx, cmdSet, item, item.casID)
 }
 
-func (c *Client) populateOne(cmd command, item *Item, casid uint64) error {
+func (c *Client) populateOne(ctx context.Context, cmd command, item *Item, casid uint64) error {
 	extras := make([]byte, 8)
 	binary.BigEndian.PutUint32(extras, item.Flags)
 	binary.BigEndian.PutUint32(extras[4:8], uint32(item.Expiration))
 
-	cn, err := c.sendCommand(item.Key, cmd, item.Value, casid, extras)
+	cn, err := c.sendCommand(ctx, item.Key, cmd, item.Value, casid, extras)
 	if err != nil {
 		return err
 	}
 
-	hdr, _, _, _, err := c.parseResponse(item.Key, cn)
+	hdr, _, _, _, err := c.parseResponse(ctx, item.Key, cn)
 	if err != nil {
 		c.condRelease(cn, &err)
 		return err
@@ -943,13 +946,13 @@ func (c *Client) populateOne(cmd command, item *Item, casid uint64) error {
 // Delete deletes the item with the provided key.
 //
 // The error ErrCacheMiss is returned if the item didn't already exist in the cache.
-func (c *Client) Delete(key string) error {
-	cn, err := c.sendCommand(key, cmdDelete, nil, 0, nil)
+func (c *Client) Delete(ctx context.Context, key string) error {
+	cn, err := c.sendCommand(ctx, key, cmdDelete, nil, 0, nil)
 	if err != nil {
 		return err
 	}
 
-	_, _, _, _, err = c.parseResponse(key, cn)
+	_, _, _, _, err = c.parseResponse(ctx, key, cn)
 	c.condRelease(cn, &err)
 
 	return err
@@ -958,8 +961,8 @@ func (c *Client) Delete(key string) error {
 // Ping checks all instances if they are alive.
 //
 // Returns error if any of them is down.
-func (c *Client) Ping() error {
-	return c.each(cmdVersion, false)
+func (c *Client) Ping(ctx context.Context) error {
+	return c.each(ctx, cmdVersion, false)
 }
 
 // Increment atomically increments key by delta.
@@ -969,8 +972,8 @@ func (c *Client) Ping() error {
 // memcached must be an decimal number, or an error will be returned.
 //
 // On 64-bit overflow, the new value wraps around.
-func (c *Client) Increment(key string, delta uint64) (newValue uint64, err error) {
-	return c.incrDecr(cmdIncr, key, delta)
+func (c *Client) Increment(ctx context.Context, key string, delta uint64) (newValue uint64, err error) {
+	return c.incrDecr(ctx, cmdIncr, key, delta)
 }
 
 // Decrement atomically decrements key by delta.
@@ -981,11 +984,11 @@ func (c *Client) Increment(key string, delta uint64) (newValue uint64, err error
 //
 // On underflow, the new value is capped at zero and does not wrap
 // around.
-func (c *Client) Decrement(key string, delta uint64) (newValue uint64, err error) {
-	return c.incrDecr(cmdDecr, key, delta)
+func (c *Client) Decrement(ctx context.Context, key string, delta uint64) (newValue uint64, err error) {
+	return c.incrDecr(ctx, cmdDecr, key, delta)
 }
 
-func (c *Client) incrDecr(cmd command, key string, delta uint64) (uint64, error) {
+func (c *Client) incrDecr(ctx context.Context, cmd command, key string, delta uint64) (uint64, error) {
 	extras := make([]byte, 20)
 	binary.BigEndian.PutUint64(extras, delta)
 
@@ -995,17 +998,17 @@ func (c *Client) incrDecr(cmd command, key string, delta uint64) (uint64, error)
 		extras[ii] = 0xff
 	}
 
-	cn, err := c.sendCommand(key, cmd, nil, 0, extras)
+	cn, err := c.sendCommand(ctx, key, cmd, nil, 0, extras)
 	if err != nil {
 		return 0, err
 	}
 
-	return c.parseUintResponse(key, cn)
+	return c.parseUintResponse(ctx, key, cn)
 }
 
 // DeleteAll removes all the items in the cache after expiration seconds. If
 // expiration is <= 0, it removes all the items right now.
-func (c *Client) DeleteAll(expiration int) error {
+func (c *Client) DeleteAll(ctx context.Context, expiration int) error {
 	servers := c.selector.Servers()
 
 	var extras []byte
@@ -1017,14 +1020,14 @@ func (c *Client) DeleteAll(expiration int) error {
 	var errs []error
 	var failed []*Addr
 	for _, addr := range servers {
-		cn, err := c.getConn(addr)
+		cn, err := c.getConn(ctx, addr)
 		if err != nil {
 			failed = append(failed, addr)
 			errs = append(errs, err)
 			continue
 		}
-		if err = c.sendConnCommand(cn, "", cmdFlush, nil, 0, extras); err == nil {
-			_, _, _, _, err = c.parseResponse("", cn)
+		if err = c.sendConnCommand(ctx, cn, "", cmdFlush, nil, 0, extras); err == nil {
+			_, _, _, _, err = c.parseResponse(ctx, "", cn)
 		}
 		if err != nil {
 			failed = append(failed, addr)
@@ -1055,8 +1058,8 @@ func (c *Client) DeleteAll(expiration int) error {
 // GetConfig gets the config type.
 //
 // ErrClusterConfigMiss is returned if config for the type cluster is not found. The type must be at most 250 bytes in length.
-func (c *Client) GetConfig(key string) (clusterConfig *ClusterConfig, err error) {
-	clusterConfig, err = c.getConfig(key)
+func (c *Client) GetConfig(ctx context.Context, key string) (clusterConfig *ClusterConfig, err error) {
+	clusterConfig, err = c.getConfig(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -1074,7 +1077,7 @@ func (c *Client) GetConfig(key string) (clusterConfig *ClusterConfig, err error)
 // The configType must be at most 250 bytes in length.
 //
 // TODO(zchee): implement setConfig as well.
-func (c *Client) getConfig(key string) (clusterConfig *ClusterConfig, err error) {
+func (c *Client) getConfig(ctx context.Context, key string) (clusterConfig *ClusterConfig, err error) {
 	if !isValidKey(key) {
 		return nil, ErrMalformedKey
 	}
@@ -1084,12 +1087,12 @@ func (c *Client) getConfig(key string) (clusterConfig *ClusterConfig, err error)
 		return nil, err
 	}
 
-	cn, err := c.getConn(addr)
+	cn, err := c.getConn(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	clusterConfig, err = c.getConfigFromAddr(cn, key)
+	clusterConfig, err = c.getConfigFromAddr(ctx, cn, key)
 	if err != nil {
 		c.condRelease(cn, &err)
 		return nil, err
@@ -1101,12 +1104,12 @@ func (c *Client) getConfig(key string) (clusterConfig *ClusterConfig, err error)
 	return clusterConfig, err
 }
 
-func (c *Client) getConfigFromAddr(cn *conn, key string) (*ClusterConfig, error) {
-	if err := c.sendConnCommand(cn, "", cmdConfigGet, []byte(key), 0, nil); err != nil {
+func (c *Client) getConfigFromAddr(ctx context.Context, cn *conn, key string) (*ClusterConfig, error) {
+	if err := c.sendConnCommand(ctx, cn, "", cmdConfigGet, []byte(key), 0, nil); err != nil {
 		return nil, err
 	}
 
-	cc, err := c.parseConfigGetResponse(cn, true)
+	cc, err := c.parseConfigGetResponse(ctx, cn, true)
 	if err != nil {
 		return nil, err
 	}
@@ -1115,8 +1118,8 @@ func (c *Client) getConfigFromAddr(cn *conn, key string) (*ClusterConfig, error)
 }
 
 // TODO(zchee): implements correctly.
-func (c *Client) parseConfigGetResponse(cn *conn, release bool) (*ClusterConfig, error) {
-	hdr, k, extras, body, err := c.parseResponse("", cn)
+func (c *Client) parseConfigGetResponse(ctx context.Context, cn *conn, release bool) (*ClusterConfig, error) {
+	hdr, k, extras, body, err := c.parseResponse(ctx, "", cn)
 	if release {
 		c.condRelease(cn, &err)
 	}

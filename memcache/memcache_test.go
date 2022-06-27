@@ -5,6 +5,7 @@
 package memcache
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,7 +49,8 @@ func TestLocalhost(t *testing.T) {
 		return
 	}
 
-	testWithClient(t, New(memcachedAddr))
+	ctx := context.Background()
+	testWithClient(ctx, t, New(memcachedAddr))
 }
 
 func newUnixServer(tb testing.TB) (*exec.Cmd, *Client) {
@@ -77,19 +79,20 @@ func TestUnixSocket(t *testing.T) {
 	defer cmd.Wait()
 	defer cmd.Process.Kill()
 
-	testWithClient(t, c)
+	ctx := context.Background()
+	testWithClient(ctx, t, c)
 }
 
-func mustSet(t *testing.T, c *Client) func(*Item) {
+func mustSet(ctx context.Context, t *testing.T, c *Client) func(*Item) {
 	return func(it *Item) {
-		if err := c.Set(it); err != nil {
+		if err := c.Set(ctx, it); err != nil {
 			t.Fatalf("failed to Set %#v: %v", *it, err)
 		}
 	}
 }
 
-func testWithClient(t *testing.T, c *Client) {
-	mustSet := mustSet(t, c)
+func testWithClient(ctx context.Context, t *testing.T, c *Client) {
+	mustSet := mustSet(ctx, t, c)
 
 	// Set
 	{
@@ -98,18 +101,18 @@ func testWithClient(t *testing.T, c *Client) {
 			Value: []byte("fooval"),
 			Flags: 123,
 		}
-		if err := c.Set(foo); err != nil {
+		if err := c.Set(ctx, foo); err != nil {
 			t.Fatalf("first set(foo): %v", err)
 		}
 
-		if err := c.Set(foo); err != nil {
+		if err := c.Set(ctx, foo); err != nil {
 			t.Fatalf("second set(foo): %v", err)
 		}
 	}
 
 	// Get
 	{
-		it, err := c.Get("foo")
+		it, err := c.Get(ctx, "foo")
 		if err != nil {
 			t.Fatalf("get(foo): %v", err)
 		}
@@ -126,7 +129,7 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Get non-existant
 	{
-		if _, err := c.Get("not-exists"); err != ErrCacheMiss {
+		if _, err := c.Get(ctx, "not-exists"); err != ErrCacheMiss {
 			t.Errorf("get(not-exists): expecting %v, got %v instead", ErrCacheMiss, err)
 		}
 	}
@@ -138,11 +141,11 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   quxKey,
 			Value: []byte("hello world"),
 		}
-		if err := c.Set(qux); err != nil {
+		if err := c.Set(ctx, qux); err != nil {
 			t.Fatalf("first set(Hello_世界): %v", err)
 		}
 
-		it, err := c.Get(quxKey)
+		it, err := c.Get(ctx, quxKey)
 		if err != nil {
 			t.Fatalf("get(Hello): %v", err)
 		}
@@ -160,7 +163,7 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "foo bar",
 			Value: []byte("foobarval"),
 		}
-		if err := c.Set(malFormed); err != ErrMalformedKey {
+		if err := c.Set(ctx, malFormed); err != ErrMalformedKey {
 			t.Errorf("set(foo bar) should return ErrMalformedKey instead of %v", err)
 		}
 
@@ -168,7 +171,7 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "foo" + string(rune(0x7f)),
 			Value: []byte("foobarval"),
 		}
-		if err := c.Set(malFormed); err != ErrMalformedKey {
+		if err := c.Set(ctx, malFormed); err != ErrMalformedKey {
 			t.Errorf("set(foo<0x7f>) should return ErrMalformedKey instead of %v", err)
 		}
 	}
@@ -179,10 +182,10 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "bar",
 			Value: []byte("barval"),
 		}
-		if err := c.Add(bar); err != nil {
+		if err := c.Add(ctx, bar); err != nil {
 			t.Fatalf("first add(bar): %v", err)
 		}
-		if err := c.Add(bar); err != ErrNotStored {
+		if err := c.Add(ctx, bar); err != ErrNotStored {
 			t.Fatalf("second add(bar) want ErrNotStored, got %v", err)
 		}
 	}
@@ -197,17 +200,17 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "baz",
 			Value: []byte("bazvalue"),
 		}
-		if err := c.Replace(baz); err != ErrNotStored {
+		if err := c.Replace(ctx, baz); err != ErrNotStored {
 			t.Fatalf("expected replace(baz) to return ErrNotStored, got %v", err)
 		}
-		if err := c.Replace(bar); err != nil {
+		if err := c.Replace(ctx, bar); err != nil {
 			t.Fatalf("replaced(bar): %v", err)
 		}
 	}
 
 	// GetMulti
 	{
-		m, err := c.GetMulti([]string{"foo", "bar"})
+		m, err := c.GetMulti(ctx, []string{"foo", "bar"})
 		if err != nil {
 			t.Fatalf("GetMulti: %v", err)
 		}
@@ -230,10 +233,10 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Delete
 	{
-		if err := c.Delete("foo"); err != nil {
+		if err := c.Delete(ctx, "foo"); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		_, err := c.Get("foo")
+		_, err := c.Get(ctx, "foo")
 		if err != ErrCacheMiss {
 			t.Errorf("post-Delete want ErrCacheMiss, got %v", err)
 		}
@@ -245,25 +248,26 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "num",
 			Value: []byte("42"),
 		})
-		n, err := c.Increment("num", 8)
+		n, err := c.Increment(ctx, "num", 8)
 		if err != nil {
 			t.Fatalf("Increment num + 8: %v", err)
 		}
 		if n != 50 {
 			t.Fatalf("Increment num + 8: want=50, got=%d", n)
 		}
-		n, err = c.Decrement("num", 49)
+		n, err = c.Decrement(ctx, "num", 49)
 		if err != nil {
 			t.Fatalf("Decrement: %v", err)
 		}
 		if n != 1 {
 			t.Fatalf("Decrement 49: want=1, got=%d", n)
 		}
-		if err := c.Delete("num"); err != nil {
+
+		if err := c.Delete(ctx, "num"); err != nil {
 			t.Fatalf("delete num: %v", err)
 		}
 
-		n, err = c.Increment("num", 1)
+		n, err = c.Increment(ctx, "num", 1)
 		if err != ErrCacheMiss {
 			t.Fatalf("increment post-delete: want ErrCacheMiss, got %v", err)
 		}
@@ -272,19 +276,19 @@ func testWithClient(t *testing.T, c *Client) {
 			Key:   "num",
 			Value: []byte("not-numeric"),
 		})
-		n, err = c.Increment("num", 1)
+		n, err = c.Increment(ctx, "num", 1)
 		if err == nil {
 			t.Fatalf("increment non-number: want client error, got %v", err)
 		}
-		testTouchWithClient(t, c)
+		testTouchWithClient(ctx, t, c)
 	}
 
 	// Test Delete All
 	{
-		if err := c.DeleteAll(0); err != nil {
+		if err := c.DeleteAll(ctx, 0); err != nil {
 			t.Fatalf("DeleteAll: %v", err)
 		}
-		_, err := c.Get("bar")
+		_, err := c.Get(ctx, "bar")
 		if err != ErrCacheMiss {
 			t.Errorf("post-DeleteAll want ErrCacheMiss, got %v", err)
 		}
@@ -292,19 +296,19 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Test Ping
 	{
-		if err := c.Ping(); err != nil {
+		if err := c.Ping(ctx); err != nil {
 			t.Fatalf("error ping: %s", err)
 		}
 	}
 }
 
-func testTouchWithClient(t *testing.T, c *Client) {
+func testTouchWithClient(ctx context.Context, t *testing.T, c *Client) {
 	if testing.Short() {
 		t.Log("Skipping testing memcache Touch with testing in Short mode")
 		return
 	}
 
-	mustSet := mustSet(t, c)
+	mustSet := mustSet(ctx, t, c)
 	const secondsToExpiry = int32(2)
 
 	// We will set foo and bar to expire in 2 seconds, then we'll keep touching
@@ -327,12 +331,12 @@ func testTouchWithClient(t *testing.T, c *Client) {
 
 	for s := 0; s < 3; s++ {
 		time.Sleep(time.Duration(500 * time.Millisecond))
-		if err := c.Touch(foo.Key, secondsToExpiry); nil != err {
+		if err := c.Touch(ctx, foo.Key, secondsToExpiry); nil != err {
 			t.Errorf("error touching foo: %v", err.Error())
 		}
 	}
 
-	if _, err := c.Get("foo"); err != nil {
+	if _, err := c.Get(ctx, "foo"); err != nil {
 		if errors.Is(err, ErrCacheMiss) {
 			t.Fatalf("touching failed to keep item foo alive")
 		}
@@ -340,7 +344,7 @@ func testTouchWithClient(t *testing.T, c *Client) {
 		t.Fatalf("unexpected error retrieving foo after touching: %v", err.Error())
 	}
 
-	_, err := c.Get("bar")
+	_, err := c.Get(ctx, "bar")
 	if err == nil {
 		t.Fatalf("item bar did not expire within %v seconds", time.Now().Sub(setTime).Seconds())
 	}
@@ -350,6 +354,8 @@ func testTouchWithClient(t *testing.T, c *Client) {
 }
 
 func BenchmarkOnItem(b *testing.B) {
+	ctx := context.Background()
+
 	fakeServer, err := net.Listen("tcp4", memcachedAddr)
 	if err != nil {
 		b.Fatal("Could not open fake server: ", err)
@@ -368,7 +374,7 @@ func BenchmarkOnItem(b *testing.B) {
 
 	addr := fakeServer.Addr()
 	c := New(addr.String())
-	if _, err := c.getConn(NewAddr(addr)); err != nil {
+	if _, err := c.getConn(ctx, NewAddr(addr)); err != nil {
 		b.Fatal("failed to initialize connection to fake server")
 	}
 
@@ -377,6 +383,6 @@ func BenchmarkOnItem(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		c.populateOne(cmdNoop, &item, 0)
+		c.populateOne(ctx, cmdNoop, &item, 0)
 	}
 }

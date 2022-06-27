@@ -5,6 +5,7 @@
 package memcache
 
 import (
+	"context"
 	"log"
 	"net"
 	"strconv"
@@ -34,7 +35,7 @@ type configPoller struct {
 }
 
 // creates a new cluster config poller
-func newConfigPoller(frequency time.Duration, servers *ServerList, mc *Client) *configPoller {
+func newConfigPoller(ctx context.Context, frequency time.Duration, servers *ServerList, mc *Client) *configPoller {
 	poller := &configPoller{
 		pollingFrequency: frequency,
 		serverList:       servers,
@@ -44,21 +45,21 @@ func newConfigPoller(frequency time.Duration, servers *ServerList, mc *Client) *
 	}
 
 	// Hold the thread to initialize before returning.
-	if err := poller.readConfigAndUpdateServerList(); err != nil {
+	if err := poller.readConfigAndUpdateServerList(ctx); err != nil {
 		// no action required unless stop is explicitly called
 		log.Printf("Warning: First poll for discovery service failed due to %v", err)
 	}
 
-	go poller.readConfigPeriodically()
+	go poller.readConfigPeriodically(ctx)
 
 	return poller
 }
 
-func (c *configPoller) readConfigPeriodically() {
+func (c *configPoller) readConfigPeriodically(ctx context.Context) {
 	for {
 		select {
 		case <-c.tick.C:
-			if err := c.readConfigAndUpdateServerList(); err != nil {
+			if err := c.readConfigAndUpdateServerList(ctx); err != nil {
 				// no action required unless stop is explicitly called
 				log.Printf("Warning: Periodic poll for discovery service failed due to %v", err)
 			}
@@ -76,8 +77,8 @@ func (c *configPoller) stopPolling() {
 	})
 }
 
-func (c *configPoller) readConfigAndUpdateServerList() error {
-	clusterConfig, err := c.mc.GetConfig(clusterConfigName)
+func (c *configPoller) readConfigAndUpdateServerList(ctx context.Context) error {
+	clusterConfig, err := c.mc.GetConfig(ctx, clusterConfigName)
 	if err != nil {
 		// nothing to do in this round.
 		return err
