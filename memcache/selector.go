@@ -60,6 +60,7 @@ type ServerSelector interface {
 type ServerList struct {
 	mu    sync.RWMutex
 	addrs []*Addr
+	rng   rand.Source64
 }
 
 // make sure ServerList implements the ServerSelector interface.

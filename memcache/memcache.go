@@ -280,12 +280,11 @@ func NewDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) 
 	return newDiscoveryClient(discoveryAddress, pollingDuration)
 }
 
-// for the unit test
 func newDiscoveryClient(discoveryAddress string, pollingDuration time.Duration) (*Client, error) {
-	// creates a new ServerList object which contains all the server eventually.
-	rand.Seed(time.Now().UnixNano())
-
-	ss := new(ServerList)
+	ss := &ServerList{
+		// creates a new ServerList object which contains all the server eventually.
+		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 	mcCfgPollerHelper := New(discoveryAddress)
 	cfgPoller := newConfigPoller(pollingDuration, ss, mcCfgPollerHelper)
 
