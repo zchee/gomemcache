@@ -6,6 +6,7 @@ package memcache
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -16,15 +17,29 @@ import (
 	"time"
 )
 
-const testServer = "127.0.0.1:11211"
+const memcachedHost = "127.0.0.1"
+
+var flagPort string
+
+var memcachedAddr string
+
+func TestMain(m *testing.M) {
+	flag.StringVar(&flagPort, "port", "13134", "port of test memcached instance") // m(13) e m(13) d(4)
+	flag.Parse()
+
+	memcachedAddr = net.JoinHostPort(memcachedHost, flagPort)
+
+	m.Run()
+}
 
 func setup(t *testing.T) bool {
-	c, err := net.Dial("tcp4", testServer)
+	c, err := net.Dial("tcp4", memcachedAddr)
 	if err != nil {
-		t.Skipf("skipping test; no server running at %s", testServer)
+		t.Skipf("skipping test; no server running at %s", memcachedAddr)
 	}
 	c.Write([]byte("flush_all\r\n"))
 	c.Close()
+
 	return true
 }
 
@@ -32,7 +47,8 @@ func TestLocalhost(t *testing.T) {
 	if !setup(t) {
 		return
 	}
-	testWithClient(t, New(testServer))
+
+	testWithClient(t, New(memcachedAddr))
 }
 
 func newUnixServer(tb testing.TB) (*exec.Cmd, *Client) {
@@ -51,6 +67,7 @@ func newUnixServer(tb testing.TB) (*exec.Cmd, *Client) {
 		}
 		time.Sleep(time.Duration(25*i) * time.Millisecond)
 	}
+
 	return cmd, New(sock)
 }
 
@@ -59,10 +76,11 @@ func TestUnixSocket(t *testing.T) {
 	cmd, c := newUnixServer(t)
 	defer cmd.Wait()
 	defer cmd.Process.Kill()
+
 	testWithClient(t, c)
 }
 
-func mustSetF(t *testing.T, c *Client) func(*Item) {
+func mustSet(t *testing.T, c *Client) func(*Item) {
 	return func(it *Item) {
 		if err := c.Set(it); err != nil {
 			t.Fatalf("failed to Set %#v: %v", *it, err)
@@ -71,11 +89,15 @@ func mustSetF(t *testing.T, c *Client) func(*Item) {
 }
 
 func testWithClient(t *testing.T, c *Client) {
-	mustSet := mustSetF(t, c)
+	mustSet := mustSet(t, c)
 
 	// Set
 	{
-		foo := &Item{Key: "foo", Value: []byte("fooval"), Flags: 123}
+		foo := &Item{
+			Key:   "foo",
+			Value: []byte("fooval"),
+			Flags: 123,
+		}
 		if err := c.Set(foo); err != nil {
 			t.Fatalf("first set(foo): %v", err)
 		}
@@ -112,7 +134,10 @@ func testWithClient(t *testing.T, c *Client) {
 	// Get and set a unicode key
 	{
 		quxKey := "Hello"
-		qux := &Item{Key: quxKey, Value: []byte("hello world")}
+		qux := &Item{
+			Key:   quxKey,
+			Value: []byte("hello world"),
+		}
 		if err := c.Set(qux); err != nil {
 			t.Fatalf("first set(Hello_世界): %v", err)
 		}
@@ -131,12 +156,18 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Set malformed keys
 	{
-		malFormed := &Item{Key: "foo bar", Value: []byte("foobarval")}
+		malFormed := &Item{
+			Key:   "foo bar",
+			Value: []byte("foobarval"),
+		}
 		if err := c.Set(malFormed); err != ErrMalformedKey {
 			t.Errorf("set(foo bar) should return ErrMalformedKey instead of %v", err)
 		}
 
-		malFormed = &Item{Key: "foo" + string(rune(0x7f)), Value: []byte("foobarval")}
+		malFormed = &Item{
+			Key:   "foo" + string(rune(0x7f)),
+			Value: []byte("foobarval"),
+		}
 		if err := c.Set(malFormed); err != ErrMalformedKey {
 			t.Errorf("set(foo<0x7f>) should return ErrMalformedKey instead of %v", err)
 		}
@@ -144,7 +175,10 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Add
 	{
-		bar := &Item{Key: "bar", Value: []byte("barval")}
+		bar := &Item{
+			Key:   "bar",
+			Value: []byte("barval"),
+		}
 		if err := c.Add(bar); err != nil {
 			t.Fatalf("first add(bar): %v", err)
 		}
@@ -155,8 +189,14 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Replace
 	{
-		bar := &Item{Key: "bar", Value: []byte("barval")}
-		baz := &Item{Key: "baz", Value: []byte("bazvalue")}
+		bar := &Item{
+			Key:   "bar",
+			Value: []byte("barval"),
+		}
+		baz := &Item{
+			Key:   "baz",
+			Value: []byte("bazvalue"),
+		}
 		if err := c.Replace(baz); err != ErrNotStored {
 			t.Fatalf("expected replace(baz) to return ErrNotStored, got %v", err)
 		}
@@ -201,7 +241,10 @@ func testWithClient(t *testing.T, c *Client) {
 
 	// Incr/Decr
 	{
-		mustSet(&Item{Key: "num", Value: []byte("42")})
+		mustSet(&Item{
+			Key:   "num",
+			Value: []byte("42"),
+		})
 		n, err := c.Increment("num", 8)
 		if err != nil {
 			t.Fatalf("Increment num + 8: %v", err)
@@ -224,8 +267,11 @@ func testWithClient(t *testing.T, c *Client) {
 		if err != ErrCacheMiss {
 			t.Fatalf("increment post-delete: want ErrCacheMiss, got %v", err)
 		}
-		mustSet(&Item{Key: "num", Value: []byte("not-numeric")})
 
+		mustSet(&Item{
+			Key:   "num",
+			Value: []byte("not-numeric"),
+		})
 		n, err = c.Increment("num", 1)
 		if err == nil {
 			t.Fatalf("increment non-number: want client error, got %v", err)
@@ -258,15 +304,22 @@ func testTouchWithClient(t *testing.T, c *Client) {
 		return
 	}
 
-	mustSet := mustSetF(t, c)
-
+	mustSet := mustSet(t, c)
 	const secondsToExpiry = int32(2)
 
 	// We will set foo and bar to expire in 2 seconds, then we'll keep touching
 	// foo every second
 	// After 3 seconds, we expect foo to be available, and bar to be expired
-	foo := &Item{Key: "foo", Value: []byte("fooval"), Expiration: secondsToExpiry}
-	bar := &Item{Key: "bar", Value: []byte("barval"), Expiration: secondsToExpiry / 2}
+	foo := &Item{
+		Key:        "foo",
+		Value:      []byte("fooval"),
+		Expiration: secondsToExpiry,
+	}
+	bar := &Item{
+		Key:        "bar",
+		Value:      []byte("barval"),
+		Expiration: secondsToExpiry / 2,
+	}
 
 	setTime := time.Now()
 	mustSet(foo)
@@ -297,11 +350,12 @@ func testTouchWithClient(t *testing.T, c *Client) {
 }
 
 func BenchmarkOnItem(b *testing.B) {
-	fakeServer, err := net.Listen("tcp4", "127.0.0.1:0")
+	fakeServer, err := net.Listen("tcp4", memcachedAddr)
 	if err != nil {
 		b.Fatal("Could not open fake server: ", err)
 	}
 	defer fakeServer.Close()
+
 	go func() {
 		for {
 			if c, err := fakeServer.Accept(); err == nil {
@@ -318,7 +372,9 @@ func BenchmarkOnItem(b *testing.B) {
 		b.Fatal("failed to initialize connection to fake server")
 	}
 
-	item := Item{Key: "foo"}
+	item := Item{
+		Key: "foo",
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		c.populateOne(cmdNoop, &item, 0)

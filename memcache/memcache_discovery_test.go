@@ -34,6 +34,7 @@ var exit = make(chan bool)
 // Run the memcached binary as a child process and connect to its unix socket.
 func TestDiscoveryUnixSocket(t *testing.T) {
 	t.Skip("TODO")
+
 	ctx := context.Background()
 	defer ctx.Done()
 	fakeDiscoveryServer.start(ctx)
