@@ -35,7 +35,6 @@ type configPoller struct {
 
 // creates a new cluster config poller
 func newConfigPoller(frequency time.Duration, servers *ServerList, mc *Client) *configPoller {
-
 	poller := &configPoller{
 		pollingFrequency: frequency,
 		serverList:       servers,
@@ -43,13 +42,15 @@ func newConfigPoller(frequency time.Duration, servers *ServerList, mc *Client) *
 		tick:             time.NewTicker(frequency),
 		done:             make(chan bool),
 	}
+
 	// Hold the thread to initialize before returning.
-	err := poller.readConfigAndUpdateServerList()
-	if err != nil {
+	if err := poller.readConfigAndUpdateServerList(); err != nil {
 		// no action required unless stop is explicitly called
 		log.Printf("Warning: First poll for discovery service failed due to %v", err)
 	}
+
 	go poller.readConfigPeriodically()
+
 	return poller
 }
 
@@ -57,11 +58,11 @@ func (c *configPoller) readConfigPeriodically() {
 	for {
 		select {
 		case <-c.tick.C:
-			err := c.readConfigAndUpdateServerList()
-			if err != nil {
+			if err := c.readConfigAndUpdateServerList(); err != nil {
 				// no action required unless stop is explicitly called
 				log.Printf("Warning: Periodic poll for discovery service failed due to %v", err)
 			}
+
 		case <-c.done:
 			return
 		}
