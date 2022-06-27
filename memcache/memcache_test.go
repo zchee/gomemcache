@@ -354,9 +354,7 @@ func testTouchWithClient(ctx context.Context, t *testing.T, c *Client) {
 }
 
 func BenchmarkOnItem(b *testing.B) {
-	ctx := context.Background()
-
-	fakeServer, err := net.Listen("tcp4", memcachedAddr)
+	fakeServer, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		b.Fatal("Could not open fake server: ", err)
 	}
@@ -374,6 +372,7 @@ func BenchmarkOnItem(b *testing.B) {
 
 	addr := fakeServer.Addr()
 	c := New(addr.String())
+	ctx := context.Background()
 	if _, err := c.getConn(ctx, NewAddr(addr)); err != nil {
 		b.Fatal("failed to initialize connection to fake server")
 	}
@@ -383,6 +382,7 @@ func BenchmarkOnItem(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		ctx := context.Background()
 		c.populateOne(ctx, cmdNoop, &item, 0)
 	}
 }
