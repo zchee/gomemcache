@@ -14,28 +14,36 @@ import (
 )
 
 func prepareConfigResponse(discoveryID int, discoveryAddress [][]string) string {
-	var temp strings.Builder
-	temp.WriteString("")
-	temp.WriteString("CONFIG cluster 0 80\r\n")
-	temp.WriteString(fmt.Sprintf("%d", discoveryID))
-	temp.WriteString("\r\n")
+	var buf strings.Builder
+	buf.WriteString("")
+	buf.WriteString("CONFIG cluster 0 80\r\n")
+	buf.WriteString(fmt.Sprintf("%d", discoveryID))
+	buf.WriteString("\r\n")
+
 	for i, address := range discoveryAddress {
-		temp.WriteString(fmt.Sprintf("%s|%s|%s", address[0], address[0], address[1]))
+		buf.WriteString(fmt.Sprintf("%s|%s|%s", address[0], address[0], address[1]))
 		if i < len(discoveryAddress)-1 {
-			temp.WriteString(" ")
+			buf.WriteString(" ")
 		}
 	}
-	temp.WriteString("\n\r\n")
-	return temp.String()
+
+	buf.WriteString("\n\r\n")
+
+	return buf.String()
 }
 
 func buildClusterConfig(discoveryID int, discoveryAddress [][]string) *ClusterConfig {
 	cc := &ClusterConfig{ConfigID: int64(discoveryID)}
 	cc.NodeAddresses = make([]ClusterNode, len(discoveryAddress))
+
 	for i, address := range discoveryAddress {
 		port, _ := strconv.ParseInt(address[1], 10, 64)
-		cc.NodeAddresses[i] = ClusterNode{Host: address[0], Port: port}
+		cc.NodeAddresses[i] = ClusterNode{
+			Host: address[0],
+			Port: port,
+		}
 	}
+
 	return cc
 }
 
@@ -44,21 +52,32 @@ func TestGoodClusterConfigs(t *testing.T) {
 		discoveryID        int
 		discoveryAddresses [][]string
 	}{
-		{2, [][]string{{"127.0.0.1", "112233"}}},
-		{1000, [][]string{{"127.0.0.1", "112233"}, {"127.0.0.4", "123435"}}},
-		{50, [][]string{{"127.0.0.1", "112233"}, {"127.0.0.4", "123435"}, {"127.0", "123"}}},
+		{
+			discoveryID:        2,
+			discoveryAddresses: [][]string{{"127.0.0.1", "112233"}},
+		},
+		{
+			discoveryID:        1000,
+			discoveryAddresses: [][]string{{"127.0.0.1", "112233"}, {"127.0.0.4", "123435"}},
+		},
+		{
+			discoveryID:        50,
+			discoveryAddresses: [][]string{{"127.0.0.1", "112233"}, {"127.0.0.4", "123435"}, {"127.0", "123"}},
+		},
 	}
 	for _, tt := range configTests {
 		config := prepareConfigResponse(tt.discoveryID, tt.discoveryAddresses)
 		want := buildClusterConfig(tt.discoveryID, tt.discoveryAddresses)
 		reader := bufio.NewReader(strings.NewReader(config))
+
 		got := &ClusterConfig{}
-		f := func(cb *ClusterConfig) {
+		fn := func(cb *ClusterConfig) {
 			got = cb
 		}
-		if err := parseConfigGetResponse(reader, f); err != nil {
+		if err := parseConfigGetResponse(reader, fn); err != nil {
 			t.Errorf("parseConfigGetResponse(%q) had parse err:%v", config, err)
 		}
+
 		if !reflect.DeepEqual(*got, *want) {
 			t.Errorf("configResponse(%q) = %v; want = %v", config, got, want)
 		}
@@ -68,18 +87,49 @@ func TestGoodClusterConfigs(t *testing.T) {
 
 func TestBrokenClusterConfigs(t *testing.T) {
 	emptyConfig := ClusterConfig{}
+
 	configTests := []struct {
 		configResponse string
 		wantErrorText  string
 		wantConfig     ClusterConfig
 	}{
-		{"", "", emptyConfig},        // empty config returns no error with empty cluster config
-		{"END\r\n", "", emptyConfig}, // empty config returns no error with empty cluster config
-		{"CONFIG cluster 0 80\r\nbadCfg\r\n123.76|123.76|5432\r\nEND\r\n", "strconv.ParseInt: parsing \"badCfg\"", emptyConfig},                            // error parsing port
-		{"CONFIG cluster 0 80\r\n100\r\n123.76|123.76|portBroken\r\nEND\r\n", "strconv.ParseInt: parsing \"portBroken\"", emptyConfig},                     // error parsing port
-		{"CONFIG cluster 0 80\r\n100\r\n123.76123.76portBroken\r\nEND\r\n", "host address ([123.76123.76portBroken]) not in expected format", emptyConfig}, // error tokenizing due to no pipes
-		{"CONFIG cluster 0 80\r\n100\r\n123.76|123.76|123123.76|123.76|123\r\nEND\r\n", "invalid syntax", emptyConfig},                                     // error tokenizing due to no spaces
+		// empty config returns no error with empty cluster config
+		{
+			configResponse: "",
+			wantErrorText:  "",
+			wantConfig:     emptyConfig,
+		},
+		// empty config returns no error with empty cluster config
+		{
+			configResponse: "END\r\n",
+			wantErrorText:  "",
+			wantConfig:     emptyConfig,
+		},
+		// error parsing port
+		{
+			configResponse: "CONFIG cluster 0 80\r\nbadCfg\r\n123.76|123.76|5432\r\nEND\r\n",
+			wantErrorText:  "strconv.ParseInt: parsing \"badCfg\"",
+			wantConfig:     emptyConfig,
+		},
+		// error parsing port
+		{
 
+			configResponse: "CONFIG cluster 0 80\r\n100\r\n123.76|123.76|portBroken\r\nEND\r\n",
+			wantErrorText:  "strconv.ParseInt: parsing \"portBroken\"",
+			wantConfig:     emptyConfig,
+		},
+		// error tokenizing due to no pipes
+		{
+			configResponse: "CONFIG cluster 0 80\r\n100\r\n123.76123.76portBroken\r\nEND\r\n",
+			wantErrorText:  "host address ([123.76123.76portBroken]) not in expected format",
+			wantConfig:     emptyConfig,
+		},
+		// error tokenizing due to no spaces
+		{
+			configResponse: "CONFIG cluster 0 80\r\n100\r\n123.76|123.76|123123.76|123.76|123\r\nEND\r\n",
+			wantErrorText:  "invalid syntax",
+			wantConfig:     emptyConfig,
+		},
 	}
 	for _, tt := range configTests {
 		reader := bufio.NewReader(strings.NewReader(tt.configResponse))
@@ -87,9 +137,12 @@ func TestBrokenClusterConfigs(t *testing.T) {
 		f := func(cb *ClusterConfig) {
 			got = cb
 		}
-		if gotError := parseConfigGetResponse(reader, f); gotError != nil && !strings.Contains(gotError.Error(), tt.wantErrorText) {
+
+		gotError := parseConfigGetResponse(reader, f)
+		if gotError != nil && !strings.Contains(gotError.Error(), tt.wantErrorText) {
 			t.Errorf("parseConfigGetResponse(%q) parse error mismatch, got:%v, wantText:%v", tt.configResponse, gotError, tt.wantErrorText)
 		}
+
 		if !reflect.DeepEqual(*got, tt.wantConfig) {
 			t.Errorf("parseConfigGetResponse(%q), gotConfig:%v was not equal to wantConfig: %v", tt.configResponse, got, tt.wantConfig)
 		}
